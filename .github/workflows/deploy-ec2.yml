@@ -7,11 +7,16 @@ on:
 env:
   DOCKER_COMPOSE_VERSION: 1.29.2
   PROJECT_NAME: "second-group"
-  FRONTEND_PORT: 4000
-  BACKEND_PORT: 9000
+  FRONTEND_PORT: 4001
+  BACKEND_PORT: 9001
   DOMAIN: 54.236.65.244
   PROJECT_DIR: "/home/ubuntu/app/second-group"
   POSTGRES_DATA_DIR: "/opt/second-group/postgres-data"
+  CPU_LIMIT: "10000 100000"  # CPU shares and CFS quota/period
+  MEMORY_LIMIT: "10485760"   # 2GB in bytes
+  SWAP_LIMIT: "2684354560"     # 2.5GB (optional)
+  CPU_SET: "0-1"               # Which CPUs to use (optional)
+  OOM_SCORE_ADJ: "-500"
 
 jobs:
   deploy:
@@ -87,14 +92,22 @@ jobs:
       
             # Assign only the container's main process
             # Assign container PIDs to cgroup (simplified method)
-            for container in c-group_frontend_1 c-group_backend_1 c-group_postgres_1; do
-              if docker ps | grep -q $container; then
-                pid=$(docker inspect -f '{{.State.Pid}}' $container)
-                echo "Assigning $container (PID: $pid) to cgroup"
-                echo $pid | sudo tee /sys/fs/cgroup/${{ env.PROJECT_NAME }}/cgroup.procs
+            # Get all containers for this project (using COMPOSE_PROJECT_NAME)
+            containers=$(docker ps --filter "label=com.docker.compose.project=${PROJECT_NAME}" --format '{{.Names}}')
+            
+            if [ -z "$containers" ]; then
+              echo "No containers found for project ${PROJECT_NAME}"
+              exit 1
+            fi
+            
+            # Assign each container's main process to the cgroup
+            for container in $containers; do
+              pid=$(docker inspect -f '{{.State.Pid}}' "$container")
+              if [ -n "$pid" ]; then
+                echo "Assigning $container (PID: $pid) to cgroup ${PROJECT_NAME}"
+                echo "$pid" | sudo tee /sys/fs/cgroup/${PROJECT_NAME}/cgroup.procs >/dev/null
               else
-                echo "Container $container not found!"
-                exit 1
+                echo "Warning: Could not get PID for container $container"
               fi
             done
             
