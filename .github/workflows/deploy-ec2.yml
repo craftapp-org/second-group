@@ -87,7 +87,8 @@ jobs:
             # Clean up and deploy with explicit env file
             docker-compose --env-file backend/.env down || true
             docker system prune -f
-            sudo cgexec -g cpu,memory:${{ env.PROJECT_NAME }} docker-compose --env-file backend/.env up -d --build
+            # sudo cgexec -g cpu,memory:${{ env.PROJECT_NAME }} docker-compose --env-file backend/.env up -d --build
+            docker-compose --env-file backend/.env up -d --build
             sleep 10  # Wait for full initialization
       
             # Assign only the container's main process
