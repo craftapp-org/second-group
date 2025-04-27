@@ -2,8 +2,8 @@ version: "3.8"
 
 x-defaults: &defaults
   PROJECT_NAME: "second-group"
-  FRONTEND_PORT: 3000
-  BACKEND_PORT: 8000
+  FRONTEND_PORT: 3001
+  BACKEND_PORT: 8001
   
 services:
   postgres:
