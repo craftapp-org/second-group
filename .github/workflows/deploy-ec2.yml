@@ -1,0 +1,105 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches: [ master ]
+
+env:
+  DOCKER_COMPOSE_VERSION: 1.29.2
+  PROJECT_NAME: "second-group"
+  FRONTEND_PORT: 4000
+  BACKEND_PORT: 9000
+  DOMAIN: 54.236.65.244
+  PROJECT_DIR: "/home/ubuntu/app/second-group"
+  POSTGRES_DATA_DIR: "/opt/second-group/postgres-data"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      # - name: Load environment variables
+      #   uses: falti/dotenv-action@v1
+      #   with:
+      #     env-file: backend/.env
+
+      - name: Install SSH key
+        uses: shimataro/ssh-key-action@v2
+        with:
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          known_hosts: 'just-a-placeholder-so-we-dont-get-errors'
+
+      - name: Copy files via SSH
+        uses: appleboy/scp-action@master
+        with:
+          host: ${{ secrets.EC2_INSTANCE_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "./"
+          target:  "${{ env.PROJECT_DIR }}"
+
+      - name: Run nginx.sh on EC2
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_INSTANCE_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            chmod +x "${{ env.PROJECT_DIR }}/devops/nginx.sh"
+            "${{ env.PROJECT_DIR }}/devops/nginx.sh" "${{ env.PROJECT_NAME }}" "${{ env.FRONTEND_PORT }}" "${{ env.BACKEND_PORT }}" "${{ env.DOMAIN }}"
+
+      - name: Move nginx config with sudo
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_INSTANCE_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            sudo nginx -t && sudo systemctl reload nginx
+
+
+      - name: Deploy application
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.EC2_INSTANCE_IP }}
+          username: ubuntu
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e  # Exit immediately if any command fails
+            # Setup database directory
+            sudo mkdir -p "${{ env.POSTGRES_DATA_DIR }}"
+            sudo chown -R 1000:1000 "${{ env.POSTGRES_DATA_DIR }}"
+            sudo chmod -R 755 "/opt/${{ env.PROJECT_NAME }}"
+            # Set secure permissions for .env files
+            cd "${{ env.PROJECT_DIR }}"
+            sudo chmod +x devops/init-db.sh
+            sudo chmod +x devops/cgroup-setup.sh
+            sudo chmod 644 frontend/.env
+            sudo chmod 644 backend/.env
+            ./devops/cgroup-setup.sh "${{ env.PROJECT_NAME }}" "${{ env.CPU_LIMIT }}" "${{ env.MEMORY_LIMIT }}"
+            # Clean up and deploy with explicit env file
+            docker-compose --env-file backend/.env down || true
+            docker system prune -f
+            sudo cgexec -g cpu,memory:${{ env.PROJECT_NAME }} docker-compose --env-file backend/.env up -d --build
+            sleep 10  # Wait for full initialization
+      
+            # Assign only the container's main process
+            # Assign container PIDs to cgroup (simplified method)
+            for container in c-group_frontend_1 c-group_backend_1 c-group_postgres_1; do
+              if docker ps | grep -q $container; then
+                pid=$(docker inspect -f '{{.State.Pid}}' $container)
+                echo "Assigning $container (PID: $pid) to cgroup"
+                echo $pid | sudo tee /sys/fs/cgroup/${{ env.PROJECT_NAME }}/cgroup.procs
+              else
+                echo "Container $container not found!"
+                exit 1
+              fi
+            done
+            
+            # Final verification
+            echo "Current cgroup processes:"
+            cat /sys/fs/cgroup/${{ env.PROJECT_NAME }}/cgroup.procs
+            echo "Container stats:"
+            docker stats --no-stream
